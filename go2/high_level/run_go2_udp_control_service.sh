@@ -4,6 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+if [[ -n "${CYCLONEDDS_HOME:-}" ]]; then
+  export CYCLONEDDS_HOME
+  export CMAKE_PREFIX_PATH="${CYCLONEDDS_HOME}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+  if [[ -d "${CYCLONEDDS_HOME}/lib" ]]; then
+    export LD_LIBRARY_PATH="${CYCLONEDDS_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  fi
+fi
+
+if [[ -n "${PYTHONPATH_EXTRA:-}" ]]; then
+  export PYTHONPATH="${PYTHONPATH_EXTRA}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 DDS_INTERFACE="${DDS_INTERFACE:-eth0}"
 UDP_BIND="${UDP_BIND:-0.0.0.0}"

@@ -21,6 +21,35 @@ imuuwb/   IMU / UWB 读取与综合显示
 
 ## 常用命令
 
+## 一键部署到新机器
+
+如果新机器能访问 GitHub，可以直接运行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/addshark/unitree_sdk2_python_go2/main/deploy_from_github.sh)
+```
+
+这个脚本会自动完成：
+
+- 安装系统依赖
+- 从 GitHub 克隆 `unitree_sdk2_python_go2`
+- 创建 `.venv`
+- 编译安装 `CycloneDDS`
+- 安装 Python 依赖
+- 安装并启用 `go2-udp-control.service` 开机自启
+
+如果需要指定串口或速度参数，也可以这样：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/addshark/unitree_sdk2_python_go2/main/deploy_from_github.sh) -- \
+  --dds-interface eth0 \
+  --imu-port /dev/ttyUSB0 \
+  --uwb-port /dev/ttyACM0 \
+  --goback-max-speed 0.4 \
+  --goback-max-lateral-speed 0.35 \
+  --back-direction-max-yaw-speed 0.70
+```
+
 ### Go2 UDP 控制
 
 ```bash
