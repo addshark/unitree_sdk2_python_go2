@@ -321,6 +321,13 @@ class SportClient(Client):
         code, data = self._Call(SPORT_API_ID_TROTRUN, parameter)
         return code
 
+    # 1063
+    def EconomicGait(self):
+        p = {}
+        parameter = json.dumps(p)
+        code, data = self._Call(SPORT_API_ID_ECONOMICGAIT, parameter)
+        return code
+
     # 2044
     def HandStand(self, flag: bool):
         p = {}

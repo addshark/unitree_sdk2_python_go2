@@ -112,7 +112,26 @@ def parse_angle_frame(frame: bytes) -> ImuSample:
 
 
 def find_candidate_ports() -> List[str]:
-    return sorted(glob.glob("/dev/ttyACM*")) + sorted(glob.glob("/dev/ttyUSB*"))
+    candidates = []
+    candidates.extend(sorted(glob.glob("/dev/serial/by-id/*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyACM*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyUSB*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyCH343USB*")))
+    return list(dict.fromkeys(candidates))
+
+
+def open_serial_port(port: str, baud: int, timeout: float):
+    return serial.Serial(
+        port=port,
+        baudrate=baud,
+        timeout=timeout,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        xonxoff=False,
+        rtscts=False,
+        dsrdtr=False,
+    )
 
 
 def format_sample(sample: ImuSample, port: str) -> str:
@@ -131,21 +150,17 @@ def main():
     if args.port == "auto":
         candidates = find_candidate_ports()
         if not candidates:
-            print("No /dev/ttyACM* or /dev/ttyUSB* serial ports found.", file=sys.stderr)
+            print(
+                "No /dev/ttyACM*, /dev/ttyUSB*, or /dev/ttyCH343USB* serial ports found.",
+                file=sys.stderr,
+            )
             return 1
         print("Candidate ports:", ", ".join(candidates))
         print("Auto mode is listing ports only. Choose one with --port.")
         return 0
 
     try:
-        ser = serial.Serial(
-            args.port,
-            baudrate=args.baud,
-            timeout=args.timeout,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-        )
+        ser = open_serial_port(args.port, args.baud, args.timeout)
     except serial.SerialException as exc:
         print(f"Failed to open {args.port}: {exc}", file=sys.stderr)
         return 1

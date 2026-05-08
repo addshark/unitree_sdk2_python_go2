@@ -68,11 +68,34 @@ def parse_args():
         default=1.5,
         help="Auto-detect probe timeout in seconds, default: 1.5",
     )
+    parser.add_argument(
+        "--stale-timeout",
+        type=float,
+        default=1.0,
+        help="Reconnect if no fresh frames arrive within this many seconds, default: 1.0",
+    )
+    parser.add_argument(
+        "--reconnect-interval",
+        type=float,
+        default=0.8,
+        help="Reconnect retry interval in seconds, default: 0.8",
+    )
     return parser.parse_args()
 
 
+def is_disabled_port(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.lower() in {"off", "none", "disable", "disabled"}
+
+
 def candidate_ports():
-    return sorted(glob.glob("/dev/ttyACM*")) + sorted(glob.glob("/dev/ttyUSB*"))
+    candidates = []
+    candidates.extend(sorted(glob.glob("/dev/serial/by-id/*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyACM*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyUSB*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyCH343USB*")))
+    return list(dict.fromkeys(candidates))
 
 
 def shorten_port(port: Optional[str]) -> str:
@@ -81,16 +104,32 @@ def shorten_port(port: Optional[str]) -> str:
     return os.path.basename(port)
 
 
+def open_serial_port(port: str, baud: int, timeout: float):
+    return serial.Serial(
+        port=port,
+        baudrate=baud,
+        timeout=timeout,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        xonxoff=False,
+        rtscts=False,
+        dsrdtr=False,
+    )
+
+
 def detect_imu_port(ports, baud: int, timeout: float):
     for port in ports:
         try:
-            ser = serial.Serial(port, baudrate=baud, timeout=0.2)
+            ser = open_serial_port(port, baud, 0.2)
         except serial.SerialException:
             continue
 
+        stateful = False
         buffer = bytearray()
         start = time.time()
         try:
+            stateful = True
             while time.time() - start < timeout:
                 chunk = ser.read(4096)
                 if chunk:
@@ -106,21 +145,24 @@ def detect_imu_port(ports, baud: int, timeout: float):
         except Exception:
             pass
         finally:
-            with contextlib.suppress(Exception):
-                ser.close()
+            if stateful:
+                with contextlib.suppress(Exception):
+                    ser.close()
     return None, None
 
 
 def detect_uwb_port(ports, baud: int, timeout: float):
     for port in ports:
         try:
-            ser = serial.Serial(port, baudrate=baud, timeout=0.2)
+            ser = open_serial_port(port, baud, 0.2)
         except serial.SerialException:
             continue
 
+        stateful = False
         buffer = bytearray()
         start = time.time()
         try:
+            stateful = True
             while time.time() - start < timeout:
                 chunk = ser.read(4096)
                 if chunk:
@@ -134,95 +176,124 @@ def detect_uwb_port(ports, baud: int, timeout: float):
         except Exception:
             pass
         finally:
-            with contextlib.suppress(Exception):
-                ser.close()
+            if stateful:
+                with contextlib.suppress(Exception):
+                    ser.close()
     return None, None
 
 
-def imu_reader(state: StreamState):
+def imu_reader(state: StreamState, stale_timeout: float, reconnect_interval: float):
+    if state.status == "disabled":
+        return
     if not state.port or state.baud is None:
         state.status = "not_found"
         state.error = "IMU port not found"
         return
 
-    state.status = "opening"
-    try:
-        ser = serial.Serial(state.port, baudrate=state.baud, timeout=0.2)
-    except serial.SerialException as exc:
-        state.status = "open_fail"
-        state.error = str(exc)
+    while not state.stop_event.is_set():
+        state.status = "opening"
+        try:
+            ser = open_serial_port(state.port, state.baud, 0.2)
+        except serial.SerialException as exc:
+            state.status = "open_fail"
+            state.error = str(exc)
+            state.stop_event.wait(reconnect_interval)
+            continue
+
+        state.status = "streaming"
+        buffer = bytearray()
+        last_frame_time = time.monotonic()
+        if state.last_update is not None:
+            last_frame_time = time.monotonic()
+
+        try:
+            while not state.stop_event.is_set():
+                chunk = ser.read(4096)
+                if chunk:
+                    state.total_bytes += len(chunk)
+                    if len(state.preview) < 64:
+                        state.preview += chunk[: 64 - len(state.preview)]
+                    buffer.extend(chunk)
+
+                while True:
+                    frame = read_imu_angles.extract_frame(buffer)
+                    if frame is None:
+                        break
+                    if frame[1] != read_imu_angles.ANGLE_FRAME_TYPE:
+                        continue
+                    state.imu_sample = read_imu_angles.parse_angle_frame(frame)
+                    state.last_update = state.imu_sample.timestamp
+                    state.status = "streaming"
+                    state.error = None
+                    last_frame_time = time.monotonic()
+
+                if time.monotonic() - last_frame_time > stale_timeout:
+                    raise RuntimeError("no fresh IMU frames, reconnecting")
+        except Exception as exc:
+            state.status = "error"
+            state.error = str(exc)
+        finally:
+            with contextlib.suppress(Exception):
+                ser.close()
+
+        if not state.stop_event.is_set():
+            state.stop_event.wait(reconnect_interval)
+
+
+def uwb_reader(state: StreamState, stale_timeout: float, reconnect_interval: float):
+    if state.status == "disabled":
         return
-
-    state.status = "streaming"
-    buffer = bytearray()
-
-    try:
-        while not state.stop_event.is_set():
-            chunk = ser.read(4096)
-            if chunk:
-                state.total_bytes += len(chunk)
-                if len(state.preview) < 64:
-                    state.preview += chunk[: 64 - len(state.preview)]
-                buffer.extend(chunk)
-
-            while True:
-                frame = read_imu_angles.extract_frame(buffer)
-                if frame is None:
-                    break
-                if frame[1] != read_imu_angles.ANGLE_FRAME_TYPE:
-                    continue
-                state.imu_sample = read_imu_angles.parse_angle_frame(frame)
-                state.last_update = state.imu_sample.timestamp
-                state.status = "streaming"
-                state.error = None
-    except Exception as exc:
-        state.status = "error"
-        state.error = str(exc)
-    finally:
-        with contextlib.suppress(Exception):
-            ser.close()
-
-
-def uwb_reader(state: StreamState):
     if not state.port or state.baud is None:
         state.status = "not_found"
         state.error = "UWB port not found"
         return
 
-    state.status = "opening"
-    try:
-        ser = serial.Serial(state.port, baudrate=state.baud, timeout=0.2)
-    except serial.SerialException as exc:
-        state.status = "open_fail"
-        state.error = str(exc)
-        return
+    while not state.stop_event.is_set():
+        state.status = "opening"
+        try:
+            ser = open_serial_port(state.port, state.baud, 0.2)
+        except serial.SerialException as exc:
+            state.status = "open_fail"
+            state.error = str(exc)
+            state.stop_event.wait(reconnect_interval)
+            continue
 
-    state.status = "streaming"
-    buffer = bytearray()
+        state.status = "streaming"
+        buffer = bytearray()
+        last_frame_time = time.monotonic()
+        if state.last_update is not None:
+            last_frame_time = time.monotonic()
 
-    try:
-        while not state.stop_event.is_set():
-            chunk = ser.read(4096)
-            if chunk:
-                state.total_bytes += len(chunk)
-                if len(state.preview) < 64:
-                    state.preview += chunk[: 64 - len(state.preview)]
-                buffer.extend(chunk)
+        try:
+            while not state.stop_event.is_set():
+                chunk = ser.read(4096)
+                if chunk:
+                    state.total_bytes += len(chunk)
+                    if len(state.preview) < 64:
+                        state.preview += chunk[: 64 - len(state.preview)]
+                    buffer.extend(chunk)
 
-            while True:
-                frame = read_uwb_coords.extract_frame(buffer, "auto")
-                if frame is None:
-                    break
-                state.uwb_sample = read_uwb_coords.parse_frame(frame)
-                state.last_update = time.time()
-                state.status = "streaming"
-                state.error = None
-    except Exception as exc:
-        state.status = "error"
-        state.error = str(exc)
-    finally:
-        with contextlib.suppress(Exception):
-            ser.close()
+                while True:
+                    frame = read_uwb_coords.extract_frame(buffer, "auto")
+                    if frame is None:
+                        break
+                    state.uwb_sample = read_uwb_coords.parse_frame(frame)
+                    state.last_update = time.time()
+                    state.status = "streaming"
+                    state.error = None
+                    last_frame_time = time.monotonic()
+
+                if time.monotonic() - last_frame_time > stale_timeout:
+                    raise RuntimeError("no fresh UWB frames, reconnecting")
+        except Exception as exc:
+            state.status = "error"
+            state.error = str(exc)
+        finally:
+            with contextlib.suppress(Exception):
+                ser.close()
+
+        if not state.stop_event.is_set():
+            state.stop_event.wait(reconnect_interval)
 
 
 def age_text(ts: Optional[float]) -> str:
@@ -286,13 +357,18 @@ def render_panel(imu_state: StreamState, uwb_state: StreamState):
             "  meta    : "
             f"{sample.frame_name}  "
             f"{read_uwb_coords.role_name(sample.role)}{sample.node_id}  "
-            f"voltage={sample.voltage_v:.3f} V"
+            f"voltage={sample.voltage_v:.3f} V  "
+            f"fix={read_uwb_coords.position_status_text(sample)}"
         )
+        if sample.valid_node_quantity is not None:
+            lines.append(f"  anchors : {sample.valid_node_quantity}")
         if sample.eop_x is not None and sample.eop_y is not None and sample.eop_z is not None:
             lines.append(
                 "  eop     : "
                 f"x={sample.eop_x:.2f} m  y={sample.eop_y:.2f} m  z={sample.eop_z:.2f} m"
             )
+        if not sample.position_valid:
+            lines.append("  note    : current frame reports default invalid position; do not use for record/goback")
     else:
         lines.append("  pos     : -")
         lines.append("  vel     : -")
@@ -314,6 +390,11 @@ def main():
     imu_probe = None
     uwb_probe = None
 
+    if is_disabled_port(imu_port):
+        imu_port = None
+    if is_disabled_port(uwb_port):
+        uwb_port = None
+
     if imu_port == "auto":
         imu_port, imu_probe = detect_imu_port(ports, args.imu_baud, args.probe_timeout)
     if uwb_port == "auto":
@@ -322,6 +403,12 @@ def main():
 
     imu_state = StreamState(kind="imu", port=imu_port, baud=args.imu_baud)
     uwb_state = StreamState(kind="uwb", port=uwb_port, baud=args.uwb_baud)
+    if is_disabled_port(args.imu_port):
+        imu_state.status = "disabled"
+        imu_state.error = None
+    if is_disabled_port(args.uwb_port):
+        uwb_state.status = "disabled"
+        uwb_state.error = None
     if imu_probe is not None:
         imu_state.imu_sample = imu_probe
         imu_state.last_update = imu_probe.timestamp
@@ -329,8 +416,16 @@ def main():
         uwb_state.uwb_sample = uwb_probe
         uwb_state.last_update = time.time()
 
-    imu_thread = threading.Thread(target=imu_reader, args=(imu_state,), daemon=True)
-    uwb_thread = threading.Thread(target=uwb_reader, args=(uwb_state,), daemon=True)
+    imu_thread = threading.Thread(
+        target=imu_reader,
+        args=(imu_state, args.stale_timeout, args.reconnect_interval),
+        daemon=True,
+    )
+    uwb_thread = threading.Thread(
+        target=uwb_reader,
+        args=(uwb_state, args.stale_timeout, args.reconnect_interval),
+        daemon=True,
+    )
     imu_thread.start()
     uwb_thread.start()
 
@@ -343,8 +438,9 @@ def main():
     finally:
         imu_state.stop_event.set()
         uwb_state.stop_event.set()
-        imu_thread.join(timeout=1.0)
-        uwb_thread.join(timeout=1.0)
+        with contextlib.suppress(KeyboardInterrupt):
+            imu_thread.join(timeout=2.0)
+            uwb_thread.join(timeout=2.0)
         print()
 
 

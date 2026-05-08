@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import ipaddress
 import json
 import queue
@@ -13,15 +14,24 @@ from typing import Callable, Dict, Iterable, Optional, Tuple
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_, SportModeState_
 from unitree_sdk2py.go2.sport.sport_client import SportClient
+from go2_return_controller import ReturnController, ReturnTuning, SensorHub
 
 
 DEFAULT_BIND = "0.0.0.0"
 DEFAULT_PORT = 8082
 DEFAULT_STATUS_PORT = 8083
 DEFAULT_STATUS_INTERVAL = 0.2
-LINEAR_SPEED = 0.3
-YAW_SPEED = 0.5
+LINEAR_SPEED = 0.5
+YAW_SPEED = 0.9
 STAND_MOVE_DELAY = 3.0
+STATIC_WALK_ID = 24
+TROT_RUN_ID = 25
+ECONOMIC_GAIT_ID = 26
+CLASSIC_WALK_ID = 27
+RECORD_LOCATION_ID = 30
+GO_BACK_ID = 31
+RECORD_DIRECTION_ID = 32
+BACK_DIRECTION_ID = 33
 
 
 @dataclass(frozen=True)
@@ -43,7 +53,11 @@ class LocalAddress:
 ACTIONS = [
     Action(0, "damp", "阻尼模式，电机进入阻尼，不主动保持运动"),
     Action(1, "stand_up", "站立"),
-    Action(23, "stand_move", "组合动作：先站立，再进入 free walk"),
+    Action(23, "stand_move", "组合动作：先站立，再进入 economic gait"),
+    Action(STATIC_WALK_ID, "static walk", "静态行走步态"),
+    Action(TROT_RUN_ID, "trot run", "小跑/常规 trot 步态"),
+    Action(ECONOMIC_GAIT_ID, "economic gait", "经济步态"),
+    Action(CLASSIC_WALK_ID, "classic walk", "经典常规步态开关"),
     Action(2, "stand_down", "趴下/卧倒"),
     Action(3, "move forward", "前进"),
     Action(20, "move backward", "后退"),
@@ -63,6 +77,10 @@ ACTIONS = [
     Action(17, "walk upright", "直立行走动作开关"),
     Action(18, "cross step", "交叉步动作开关"),
     Action(19, "free jump", "跳跃动作开关"),
+    Action(RECORD_LOCATION_ID, "recordlocation", "记录当前 UWB 坐标", ("record location",)),
+    Action(GO_BACK_ID, "goback", "根据 UWB 闭环回到记录位置"),
+    Action(RECORD_DIRECTION_ID, "record_direction", "记录当前 IMU 航向", ("record direction",)),
+    Action(BACK_DIRECTION_ID, "back_direction", "根据 IMU 闭环回到记录方向", ("back direction",)),
 ]
 
 ACTION_BY_ID: Dict[int, Action] = {action.id: action for action in ACTIONS}
@@ -236,11 +254,11 @@ def run_stand_move(client: SportClient, stop_event: threading.Event) -> int:
     print(f"StandUp ret: {ret}")
     completed = interruptible_sleep(STAND_MOVE_DELAY, stop_event)
     if not completed:
-        print("stand_move interrupted before FreeWalk")
+        print("stand_move interrupted before EconomicGait")
         return ret
 
-    ret = client.FreeWalk()
-    print(f"FreeWalk ret: {ret}")
+    ret = client.EconomicGait()
+    print(f"EconomicGait ret: {ret}")
     return ret
 
 
@@ -249,6 +267,7 @@ def execute_action(
     action: Action,
     stop_event: threading.Event,
     state_cache: RobotStateCache,
+    return_controller: ReturnController,
 ) -> None:
     print(f"Executing id={action.id}, name={action.name}")
     ret = None
@@ -259,6 +278,14 @@ def execute_action(
         ret = client.StandUp()
     elif action.id == 23:
         ret = run_stand_move(client, stop_event)
+    elif action.id == STATIC_WALK_ID:
+        ret = client.StaticWalk()
+    elif action.id == TROT_RUN_ID:
+        ret = client.TrotRun()
+    elif action.id == ECONOMIC_GAIT_ID:
+        ret = client.EconomicGait()
+    elif action.id == CLASSIC_WALK_ID:
+        ret = run_timed_switch("ClassicWalk", client.ClassicWalk, 4.0, stop_event)
     elif action.id == 2:
         ret = client.StandDown()
     elif action.id == 3:
@@ -297,6 +324,21 @@ def execute_action(
         ret = run_timed_switch("CrossStep", client.CrossStep, 4.0, stop_event)
     elif action.id == 19:
         ret = run_timed_switch("FreeJump", client.FreeJump, 4.0, stop_event)
+    elif action.id == RECORD_LOCATION_ID:
+        record = return_controller.record_location()
+        print(
+            "recordlocation saved: "
+            f"x={record.x:.3f}, y={record.y:.3f}, z={record.z:.3f}"
+        )
+        ret = 0
+    elif action.id == GO_BACK_ID:
+        ret = return_controller.goback(client, stop_event)
+    elif action.id == RECORD_DIRECTION_ID:
+        record = return_controller.record_direction()
+        print(f"record_direction saved: yaw={record.yaw_deg:.3f} deg")
+        ret = 0
+    elif action.id == BACK_DIRECTION_ID:
+        ret = return_controller.back_direction(client, stop_event)
     else:
         raise ValueError(f"unsupported action id: {action.id}")
 
@@ -311,12 +353,13 @@ def action_worker(
     actions: "queue.Queue[Action]",
     stop_event: threading.Event,
     state_cache: RobotStateCache,
+    return_controller: ReturnController,
 ) -> None:
     while True:
         action = actions.get()
         try:
             state_cache.update_last_action(action, None, "executing")
-            execute_action(client, action, stop_event, state_cache)
+            execute_action(client, action, stop_event, state_cache, return_controller)
         except Exception as exc:
             state_cache.update_last_action(action, None, f"failed: {exc}")
             print(f"Action failed id={action.id}, name={action.name}: {exc}", file=sys.stderr)
@@ -331,6 +374,13 @@ def clear_pending_actions(actions: "queue.Queue[Action]") -> None:
             actions.task_done()
         except queue.Empty:
             return
+
+
+def validate_action_request(action: Action, return_controller: ReturnController) -> None:
+    if action.id == GO_BACK_ID:
+        return_controller.sensor_hub.get_recorded_location()
+    elif action.id == BACK_DIRECTION_ID:
+        return_controller.sensor_hub.get_recorded_direction()
 
 
 def local_ipv4_addresses() -> Tuple[LocalAddress, ...]:
@@ -459,6 +509,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--status-interval", type=float, default=DEFAULT_STATUS_INTERVAL, help=f"Status broadcast interval seconds, default {DEFAULT_STATUS_INTERVAL}")
     parser.add_argument("--broadcast-host", action="append", help="Status broadcast host. Can be repeated. Default: auto LAN broadcast address.")
     parser.add_argument("--timeout", type=float, default=10.0, help="SportClient RPC timeout seconds")
+    parser.add_argument("--imu-port", default="auto", help="IMU serial port, default auto")
+    parser.add_argument("--imu-baud", type=int, default=115200, help="IMU baud rate, default 115200")
+    parser.add_argument("--uwb-port", default="auto", help="UWB serial port, default auto")
+    parser.add_argument("--uwb-baud", type=int, default=921600, help="UWB baud rate, default 921600")
+    parser.add_argument("--sensor-serial-timeout", type=float, default=0.2, help="IMU/UWB serial read timeout seconds, default 0.2")
+    parser.add_argument("--sensor-stale-timeout", type=float, default=1.0, help="Sensor freshness timeout seconds, default 1.0")
+    parser.add_argument("--sensor-wait-timeout", type=float, default=2.0, help="How long record/goback waits for fresh sensor data, default 2.0")
+    parser.add_argument("--goback-position-tolerance", type=float, default=0.15, help="Position tolerance in meters for goback, default 0.15")
+    parser.add_argument("--back-direction-tolerance", type=float, default=5.0, help="Yaw tolerance in degrees for back_direction, default 5.0")
+    parser.add_argument("--goback-kp", type=float, default=0.8, help="Reserved legacy goback gain option; constant-speed goback currently ignores it")
+    parser.add_argument("--back-direction-kp", type=float, default=1.5, help="Reserved legacy back_direction gain option; constant-speed back_direction currently ignores it")
+    parser.add_argument("--goback-max-speed", type=float, default=0.4, help="Max forward/back speed for goback, default 0.25 m/s")
+    parser.add_argument("--goback-max-lateral-speed", type=float, default=0.35, help="Max lateral speed for goback, default 0.20 m/s")
+    parser.add_argument("--goback-min-speed", type=float, default=0.06, help="Reserved legacy goback min-speed option; constant-speed goback currently ignores it")
+    parser.add_argument("--back-direction-max-yaw-speed", type=float, default=0.70, help="Max yaw speed for back_direction, default 0.50 rad/s")
+    parser.add_argument("--back-direction-min-yaw-speed", type=float, default=0.12, help="Reserved legacy back_direction min-yaw-speed option; constant-speed back_direction currently ignores it")
+    parser.add_argument("--goback-timeout", type=float, default=30.0, help="Timeout seconds for goback, default 30")
+    parser.add_argument("--back-direction-timeout", type=float, default=15.0, help="Timeout seconds for back_direction, default 15")
+    parser.add_argument("--return-control-interval", type=float, default=0.2, help="Closed-loop control interval seconds, default 0.2")
     return parser.parse_args()
 
 
@@ -479,50 +548,99 @@ def main() -> int:
     client.SetTimeout(args.timeout)
     client.Init()
 
+    return_tuning = ReturnTuning(
+        control_interval=args.return_control_interval,
+        sensor_stale_timeout=args.sensor_stale_timeout,
+        sensor_wait_timeout=args.sensor_wait_timeout,
+        position_tolerance=args.goback_position_tolerance,
+        yaw_tolerance_deg=args.back_direction_tolerance,
+        position_kp=args.goback_kp,
+        yaw_kp=args.back_direction_kp,
+        max_linear_speed=args.goback_max_speed,
+        max_lateral_speed=args.goback_max_lateral_speed,
+        max_yaw_speed=args.back_direction_max_yaw_speed,
+        min_linear_speed=args.goback_min_speed,
+        min_yaw_speed=args.back_direction_min_yaw_speed,
+        goback_timeout=args.goback_timeout,
+        back_direction_timeout=args.back_direction_timeout,
+    )
+    sensor_hub = SensorHub(
+        imu_port=args.imu_port,
+        imu_baud=args.imu_baud,
+        uwb_port=args.uwb_port,
+        uwb_baud=args.uwb_baud,
+        serial_timeout=args.sensor_serial_timeout,
+        tuning=return_tuning,
+    )
+    sensor_hub.start()
+    return_controller = ReturnController(sensor_hub, return_tuning)
+    print(
+        "Return controller sensor settings: "
+        f"imu_port={args.imu_port} imu_baud={args.imu_baud}, "
+        f"uwb_port={args.uwb_port} uwb_baud={args.uwb_baud}"
+    )
+
     stop_event = threading.Event()
     actions: "queue.Queue[Action]" = queue.Queue(maxsize=50)
-    worker = threading.Thread(target=action_worker, args=(client, actions, stop_event, state_cache), daemon=True)
+    worker = threading.Thread(
+        target=action_worker,
+        args=(client, actions, stop_event, state_cache, return_controller),
+        daemon=True,
+    )
     worker.start()
     broadcaster = threading.Thread(target=status_broadcast_worker, args=(args, state_cache, actions), daemon=True)
     broadcaster.start()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((args.bind, args.port))
-    print(f"Listening UDP on {args.bind}:{args.port}")
-    print_udp_targets(args.bind, args.port)
-    print("Send action id/name, or 'list'. JSON is also accepted: {\"id\": 3} or {\"cmd\": \"move forward\"}.")
+    try:
+        sock.bind((args.bind, args.port))
+        print(f"Listening UDP on {args.bind}:{args.port}")
+        print_udp_targets(args.bind, args.port)
+        print("Send action id/name, or 'list'. JSON is also accepted: {\"id\": 3} or {\"cmd\": \"move forward\"}.")
+        print("Sensor summary:", sensor_hub.debug_summary())
 
-    while True:
-        packet, address = sock.recvfrom(4096)
-        try:
-            command = command_from_packet(packet)
-            if normalize_command(command) in {"list", "help"}:
-                sock.sendto(action_table_text().encode("utf-8"), address)
-                continue
+        while True:
+            packet, address = sock.recvfrom(4096)
+            try:
+                command = command_from_packet(packet)
+                if normalize_command(command) in {"list", "help"}:
+                    sock.sendto(action_table_text().encode("utf-8"), address)
+                    continue
 
-            action = resolve_action(command)
-            if action is None:
-                response = f"ERROR unknown command: {command}"
+                action = resolve_action(command)
+                if action is None:
+                    response = f"ERROR unknown command: {command}"
+                    print(f"{address[0]}:{address[1]} -> {response}")
+                    sock.sendto(response.encode("utf-8"), address)
+                    continue
+
+                validate_action_request(action, return_controller)
+
+                if action.id in STOP_ACTION_IDS:
+                    stop_event.set()
+                    clear_pending_actions(actions)
+
+                actions.put_nowait(action)
+                response = f"OK queued id={action.id}, name={action.name}"
                 print(f"{address[0]}:{address[1]} -> {response}")
                 sock.sendto(response.encode("utf-8"), address)
-                continue
-
-            if action.id in STOP_ACTION_IDS:
-                stop_event.set()
-                clear_pending_actions(actions)
-
-            actions.put_nowait(action)
-            response = f"OK queued id={action.id}, name={action.name}"
-            print(f"{address[0]}:{address[1]} -> {response}")
-            sock.sendto(response.encode("utf-8"), address)
-        except queue.Full:
-            response = "ERROR action queue full"
-            print(f"{address[0]}:{address[1]} -> {response}")
-            sock.sendto(response.encode("utf-8"), address)
-        except Exception as exc:
-            response = f"ERROR {exc}"
-            print(f"{address[0]}:{address[1]} -> {response}")
-            sock.sendto(response.encode("utf-8"), address)
+            except queue.Full:
+                response = "ERROR action queue full"
+                print(f"{address[0]}:{address[1]} -> {response}")
+                sock.sendto(response.encode("utf-8"), address)
+            except Exception as exc:
+                response = f"ERROR {exc}"
+                print(f"{address[0]}:{address[1]} -> {response}")
+                sock.sendto(response.encode("utf-8"), address)
+    except KeyboardInterrupt:
+        print("\nStopping UDP control.")
+        return 0
+    finally:
+        stop_event.set()
+        clear_pending_actions(actions)
+        with contextlib.suppress(Exception):
+            sock.close()
+        sensor_hub.stop()
 
 
 if __name__ == "__main__":

@@ -69,6 +69,8 @@ class UwbSample:
     eop_x: Optional[float]
     eop_y: Optional[float]
     eop_z: Optional[float]
+    valid_node_quantity: Optional[int]
+    position_valid: bool
 
 
 def parse_args():
@@ -121,6 +123,20 @@ def role_name(role: int) -> str:
     return ROLE_NAMES.get(role, f"ROLE_{role}")
 
 
+def open_serial_port(port: str, baud: int, timeout: float):
+    return serial.Serial(
+        port=port,
+        baudrate=baud,
+        timeout=timeout,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        xonxoff=False,
+        rtscts=False,
+        dsrdtr=False,
+    )
+
+
 def checksum_ok(frame: bytes) -> bool:
     return (sum(frame[:-1]) & 0xFF) == frame[-1]
 
@@ -138,6 +154,44 @@ def read_int24_le(data: bytes, offset: int) -> int:
     if value & 0x800000:
         value -= 1 << 24
     return value
+
+
+def approx_equal(value: float, expected: float, tol: float = 1e-6) -> bool:
+    return abs(value - expected) <= tol
+
+
+def infer_position_valid(
+    x: float,
+    y: float,
+    z: float,
+    vx: float,
+    vy: float,
+    vz: float,
+    eop_x: Optional[float],
+    eop_y: Optional[float],
+    eop_z: Optional[float],
+) -> bool:
+    # Official Nooploop manual notes that Pos defaults to 1 when location is invalid.
+    if (
+        approx_equal(x, 1.0)
+        and approx_equal(y, 1.0)
+        and approx_equal(z, 1.0)
+        and approx_equal(vx, 0.0)
+        and approx_equal(vy, 0.0)
+        and approx_equal(vz, 0.0)
+        and eop_x is not None
+        and eop_y is not None
+        and eop_z is not None
+        and approx_equal(eop_x, 2.55, 0.01)
+        and approx_equal(eop_y, 2.55, 0.01)
+        and approx_equal(eop_z, 2.55, 0.01)
+    ):
+        return False
+    return True
+
+
+def position_status_text(sample: UwbSample) -> str:
+    return "valid" if sample.position_valid else "invalid_default"
 
 
 def parse_tag_frame0(frame: bytes) -> UwbSample:
@@ -174,6 +228,7 @@ def parse_tag_frame0(frame: bytes) -> UwbSample:
     eop_y = frame[eop_offset + 1] / 100.0
     eop_z = frame[eop_offset + 2] / 100.0
     voltage_v = read_uint16_le(frame, voltage_offset) / 1000.0
+    position_valid = infer_position_valid(x, y, z, vx, vy, vz, eop_x, eop_y, eop_z)
 
     return UwbSample(
         frame_name="Tag_Frame0",
@@ -191,6 +246,8 @@ def parse_tag_frame0(frame: bytes) -> UwbSample:
         eop_x=eop_x,
         eop_y=eop_y,
         eop_z=eop_z,
+        valid_node_quantity=None,
+        position_valid=position_valid,
     )
 
 
@@ -218,6 +275,8 @@ def parse_node_frame2(frame: bytes) -> UwbSample:
     vz = read_int24_le(frame, 28) / 10000.0
     local_time_ms = read_uint32_le(frame, 102)
     voltage_v = read_uint16_le(frame, 116) / 1000.0
+    valid_node_quantity = frame[118] if len(frame) > 118 else None
+    position_valid = infer_position_valid(x, y, z, vx, vy, vz, eop_x, eop_y, eop_z)
 
     return UwbSample(
         frame_name="Node_Frame2",
@@ -235,12 +294,18 @@ def parse_node_frame2(frame: bytes) -> UwbSample:
         eop_x=eop_x,
         eop_y=eop_y,
         eop_z=eop_z,
+        valid_node_quantity=valid_node_quantity,
+        position_valid=position_valid,
     )
 
 
 def find_candidate_ports() -> List[str]:
-    candidates = sorted(glob.glob("/dev/ttyACM*")) + sorted(glob.glob("/dev/ttyUSB*"))
-    return candidates
+    candidates = []
+    candidates.extend(sorted(glob.glob("/dev/serial/by-id/*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyACM*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyUSB*")))
+    candidates.extend(sorted(glob.glob("/dev/ttyCH343USB*")))
+    return list(dict.fromkeys(candidates))
 
 
 def format_sample(sample: UwbSample, port: str) -> str:
@@ -259,6 +324,9 @@ def format_sample(sample: UwbSample, port: str) -> str:
     ]
     if sample.voltage_v is not None:
         fields.append(f"voltage={sample.voltage_v:.3f}V")
+    if sample.valid_node_quantity is not None:
+        fields.append(f"anchors={sample.valid_node_quantity}")
+    fields.append(f"pos_status={position_status_text(sample)}")
     if sample.eop_x is not None and sample.eop_y is not None and sample.eop_z is not None:
         fields.append(
             f"eop=({sample.eop_x:.2f},{sample.eop_y:.2f},{sample.eop_z:.2f})m"
@@ -354,11 +422,14 @@ def self_test() -> int:
     assert abs(tag_sample.y - (-0.091)) < 1e-6
     assert abs(tag_sample.z - 1.0) < 1e-6
     assert abs(tag_sample.voltage_v - 4.948) < 1e-6
+    assert tag_sample.position_valid is True
 
     assert abs(node_sample.x - 2.782) < 1e-6
     assert abs(node_sample.y - (-0.033)) < 1e-6
     assert abs(node_sample.z - 1.0) < 1e-6
     assert abs(node_sample.voltage_v - 4.973) < 1e-6
+    assert node_sample.valid_node_quantity == 4
+    assert node_sample.position_valid is True
 
     print("Tag_Frame0 sample:", format_sample(tag_sample, "sample"))
     print("Node_Frame2 sample:", format_sample(node_sample, "sample"))
@@ -375,21 +446,17 @@ def main():
     if args.port == "auto":
         candidates = find_candidate_ports()
         if not candidates:
-            print("No /dev/ttyACM* or /dev/ttyUSB* serial ports found.", file=sys.stderr)
+            print(
+                "No /dev/ttyACM*, /dev/ttyUSB*, or /dev/ttyCH343USB* serial ports found.",
+                file=sys.stderr,
+            )
             return 1
         print("Candidate ports:", ", ".join(candidates))
         print("Auto mode is listing ports only. Choose one with --port.")
         return 0
 
     try:
-        ser = serial.Serial(
-            args.port,
-            baudrate=args.baud,
-            timeout=args.timeout,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-        )
+        ser = open_serial_port(args.port, args.baud, args.timeout)
     except serial.SerialException as exc:
         print(f"Failed to open {args.port}: {exc}", file=sys.stderr)
         return 1

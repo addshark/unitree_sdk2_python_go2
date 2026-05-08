@@ -4,7 +4,7 @@
 
 ```bash
 cd /home/unitree/unitree_sdk2_python_go2
-python3 /go2/high_level/go2_sport_client.py eth0
+python3 go2/high_level/go2_sport_client.py eth0
 ```
 
 进入程序后输入 `list` 查看动作列表，输入动作 id 或动作名称执行。
@@ -27,6 +27,11 @@ python3 /go2/high_level/go2_sport_client.py eth0
 | --- | --- | --- | --- |
 | 0 | `damp` | `Damp()` | 阻尼模式，电机进入阻尼，不主动保持运动 |
 | 1 | `stand_up` | `StandUp()` | 站立 |
+| 23 | `stand_move` | `StandUp()` -> `EconomicGait()` | 组合动作：先站立，再进入经济步态 |
+| 24 | `static walk` | `StaticWalk()` | 静态行走步态 |
+| 25 | `trot run` | `TrotRun()` | 小跑/常规 trot 步态 |
+| 26 | `economic gait` | `EconomicGait()` | 经济步态 |
+| 27 | `classic walk` | `ClassicWalk(True/False)` | 经典常规步态开关 |
 | 2 | `stand_down` | `StandDown()` | 趴下/卧倒 |
 | 3 | `move forward` | `Move(+0.3, 0, 0)` | 前进 |
 | 20 | `move backward` | `Move(-0.3, 0, 0)` | 后退 |
@@ -46,6 +51,10 @@ python3 /go2/high_level/go2_sport_client.py eth0
 | 17 | `walk upright` | `WalkUpright(True/False)` | 直立行走动作开关 |
 | 18 | `cross step` | `CrossStep(True/False)` | 交叉步动作开关 |
 | 19 | `free jump` | `FreeJump(True/False)` | 跳跃动作开关 |
+| 30 | `recordlocation` | 读取当前 UWB 坐标并保存 | 记录回位置目标点 |
+| 31 | `goback` | 持续读取 UWB 并闭环移动 | 回到记录位置 |
+| 32 | `record_direction` | 读取当前 IMU yaw 并保存 | 记录目标方向 |
+| 33 | `back_direction` | 持续读取 IMU 并闭环转向 | 回到记录方向 |
 
 ## 常用测试顺序
 
@@ -101,7 +110,7 @@ External devices should send UDP to one of these local addresses:
 也可以指定端口：
 
 ```bash
-python3 example/go2/high_level/go2_udp_control.py eth0 --port 8082
+python3 go2/high_level/go2_udp_control.py eth0 --port 8082
 ```
 
 如果网络变了，用下面命令重新确认本机 IP：
@@ -141,15 +150,23 @@ UDP 程序收到 `list` 或 `help` 会返回动作列表：
 echo -n "list" | nc -u -w1 192.168.2.11 8082
 ```
 
-UDP 动作对应表和上面的高层动作表一致。收到 `stop_move`/`6` 或 `damp`/`0` 时，程序会清空尚未执行的排队动作，并中断正在计时的开关类动作。
+UDP 动作对应表和上面的高层动作表一致。收到 `stop_move`/`6` 或 `damp`/`0` 时，程序会清空尚未执行的排队动作，并中断正在计时的开关类动作，也会中断 `goback` / `back_direction` 这类闭环动作。
 
-UDP 接收程序额外增加了一个组合动作：
+UDP 接收程序额外增加了一个组合动作、四个常规步态动作和四个基于传感器的闭环命令：
 
 | id | 输入名称 | 执行顺序 | 含义 |
 | --- | --- | --- | --- |
-| 23 | `stand_move` | `StandUp()` -> 等待约 `3s` -> `FreeWalk()` | 先站立，再进入自由行走 |
+| 23 | `stand_move` | `StandUp()` -> 等待约 `3s` -> `EconomicGait()` | 先站立，再进入经济步态 |
+| 24 | `static walk` | `StaticWalk()` | 静态行走步态 |
+| 25 | `trot run` | `TrotRun()` | 小跑/常规 trot 步态 |
+| 26 | `economic gait` | `EconomicGait()` | 经济步态 |
+| 27 | `classic walk` | `ClassicWalk(True)` -> 等待约 `4s` -> `ClassicWalk(False)` | 经典常规步态开关 |
+| 30 | `recordlocation` | 读取当前 UWB `x/y/z` 并记录 | 记住当前位置 |
+| 31 | `goback` | 不断读取当前 UWB 坐标，计算和记录点的差值，调用 `Move(vx, vy, 0)` 闭环回到目标位置 | 回位置 |
+| 32 | `record_direction` | 读取当前 IMU `yaw` 并记录 | 记住当前朝向 |
+| 33 | `back_direction` | 不断读取 IMU `yaw`，计算和记录朝向的误差，调用 `Move(0, 0, vyaw)` 闭环转回目标方向 | 回方向 |
 
-这个组合动作只在 `go2_udp_control.py` 里有，终端交互脚本 `go2_sport_client.py` 里没有这个 id。
+这些命令只在 `go2_udp_control.py` 里有，终端交互脚本 `go2_sport_client.py` 里没有这些 id。
 
 发送示例：
 
@@ -157,6 +174,53 @@ UDP 接收程序额外增加了一个组合动作：
 echo -n "23" | nc -u -w1 192.168.2.11 8082
 echo -n "stand_move" | nc -u -w1 192.168.2.11 8082
 echo -n '{"cmd":"stand_move"}' | nc -u -w1 192.168.2.11 8082
+echo -n "static walk" | nc -u -w1 192.168.2.11 8082
+echo -n "trot run" | nc -u -w1 192.168.2.11 8082
+echo -n "economic gait" | nc -u -w1 192.168.2.11 8082
+echo -n "classic walk" | nc -u -w1 192.168.2.11 8082
+echo -n "recordlocation" | nc -u -w1 192.168.2.11 8082
+echo -n "goback" | nc -u -w1 192.168.2.11 8082
+echo -n "record_direction" | nc -u -w1 192.168.2.11 8082
+echo -n "back_direction" | nc -u -w1 192.168.2.11 8082
+```
+
+推荐使用顺序：
+
+```text
+1. recordlocation
+2. record_direction
+3. 机器人离开当前点
+4. goback
+5. back_direction
+```
+
+注意：`recordlocation` 和 `goback` 依赖 UWB 的有效定位结果。如果 UWB 面板里长期显示 `x=1.000 y=1.000 z=1.000`，并且 `fix=invalid_default`、`eop` 接近 `2.55/2.55/2.55`，程序会拒绝录点和回位置，因为这类值通常只是设备的无效默认值，不是真实坐标。
+
+优化说明：
+
+- `goback` 不是简单按固定时间前进/后退，而是一直读取当前 UWB 坐标做闭环控制。
+- `goback` 现在不再使用 IMU `yaw` 做世界坐标/机体坐标转换，而是直接按固定平面约定控制：UWB `+Y` 视为机器狗正前方，UWB `+X` 视为机器狗右侧，因此控制映射为 `vx <- dy`、`vy <- -dx`。
+- `goback` 当前采用固定速度闭环：只根据目标点在前/后/左/右哪一侧决定移动方向；只要误差超过容差，就按设定的固定速度移动，进入容差后停止。
+- `back_direction` 当前采用固定角速度闭环：只根据当前朝向在目标方向左侧还是右侧决定转向；只要误差超过容差，就按设定的固定角速度转动，进入容差后停止。
+- `back_direction` 单独负责把朝向转回记录角度，这样位置控制和方向控制不会互相打架。
+- 这两个闭环动作都会在终端打印调试信息，方便看记录值、当前位置、误差和当前控制输出。
+
+如果 IMU/UWB 端口不是自动探测到的那一组，可以手动指定：
+
+```bash
+python3 go2/high_level/go2_udp_control.py eth0 \
+  --imu-port /dev/ttyUSB0 \
+  --uwb-port /dev/ttyACM0
+```
+
+常用闭环参数也可以单独调：
+
+```bash
+python3 go2/high_level/go2_udp_control.py eth0 \
+  --goback-position-tolerance 0.10 \
+  --back-direction-tolerance 3.0 \
+  --goback-max-speed 0.20 \
+  --back-direction-max-yaw-speed 0.40
 ```
 
 ## UDP 状态广播
@@ -179,13 +243,13 @@ echo -n '{"cmd":"stand_move"}' | nc -u -w1 192.168.2.11 8082
 
 ```bash
 cd /home/unitree/unitree_sdk2_python_go2
-python3 example/go2/high_level/go2_udp_control.py eth0
+python3 go2/high_level/go2_udp_control.py eth0
 ```
 
 如果要改广播端口或周期：
 
 ```bash
-python3 example/go2/high_level/go2_udp_control.py eth0 --status-port 8083 --status-interval 0.2
+python3 go2/high_level/go2_udp_control.py eth0 --status-port 8083 --status-interval 0.2
 ```
 
 程序会自动选择非 Go2 DDS 网卡的局域网广播地址。例如当前机器上，控制电脑通常在 `wlan0` 对应的网段里，程序会向类似下面的地址广播：
@@ -197,7 +261,7 @@ python3 example/go2/high_level/go2_udp_control.py eth0 --status-port 8083 --stat
 如果你想手动指定广播目标，也可以这样：
 
 ```bash
-python3 example/go2/high_level/go2_udp_control.py eth0 --broadcast-host 192.168.2.255
+python3 go2/high_level/go2_udp_control.py eth0 --broadcast-host 192.168.2.255
 ```
 
 广播内容现在只保留三项：`wlan0` 的 IP、电量百分比和高层运动状态。典型字段如下：
@@ -240,5 +304,11 @@ nc -ul 8083
 python3 -c 'import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("", 8083)); print(s.recvfrom(65535)[0].decode())'
 ```
 
-## imu uwb
-python3 sensor_panel.py --imu-port /dev/ttyUSB0 --uwb-port /dev/ttyACM0
+## IMU / UWB 面板
+
+```bash
+cd /home/unitree/unitree_sdk2_python_go2
+python3 imuuwb/sensor_panel.py
+```
+
+注意：`go2/high_level/go2_udp_control.py` 自己已经内置 IMU/UWB 读取线程。如果它正在运行，就不要再同时开 `sensor_panel.py`、`read_imu_angles.py` 或 `read_uwb_coords.py` 去读同一个串口，否则会出现串口占用、读数中断或 `multiple access on port` 之类的问题。
