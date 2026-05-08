@@ -32,6 +32,7 @@ RECORD_LOCATION_ID = 30
 GO_BACK_ID = 31
 RECORD_DIRECTION_ID = 32
 BACK_DIRECTION_ID = 33
+RETURN_POSE_ID = 34
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,12 @@ ACTIONS = [
     Action(GO_BACK_ID, "goback", "根据 UWB 闭环回到记录位置"),
     Action(RECORD_DIRECTION_ID, "record_direction", "记录当前 IMU 航向", ("record direction",)),
     Action(BACK_DIRECTION_ID, "back_direction", "根据 IMU 闭环回到记录方向", ("back direction",)),
+    Action(
+        RETURN_POSE_ID,
+        "return_pose",
+        "根据 UWB + IMU 同时闭环回到记录位置和方向",
+        ("goback_with_direction", "return pose"),
+    ),
 ]
 
 ACTION_BY_ID: Dict[int, Action] = {action.id: action for action in ACTIONS}
@@ -339,6 +346,8 @@ def execute_action(
         ret = 0
     elif action.id == BACK_DIRECTION_ID:
         ret = return_controller.back_direction(client, stop_event)
+    elif action.id == RETURN_POSE_ID:
+        ret = return_controller.return_pose(client, stop_event)
     else:
         raise ValueError(f"unsupported action id: {action.id}")
 
@@ -380,6 +389,9 @@ def validate_action_request(action: Action, return_controller: ReturnController)
     if action.id == GO_BACK_ID:
         return_controller.sensor_hub.get_recorded_location()
     elif action.id == BACK_DIRECTION_ID:
+        return_controller.sensor_hub.get_recorded_direction()
+    elif action.id == RETURN_POSE_ID:
+        return_controller.sensor_hub.get_recorded_location()
         return_controller.sensor_hub.get_recorded_direction()
 
 

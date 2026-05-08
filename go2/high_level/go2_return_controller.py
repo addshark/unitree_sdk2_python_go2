@@ -437,6 +437,45 @@ class ReturnController:
     def record_direction(self) -> RecordedDirection:
         return self.sensor_hub.record_direction_now()
 
+    def _position_command(
+        self,
+        target: RecordedLocation,
+        current,
+    ) -> Tuple[float, float, float, float, float, float, float, bool]:
+        dx_world = target.x - current.x
+        dy_world = target.y - current.y
+        distance = math.hypot(dx_world, dy_world)
+        forward_delta = dy_world
+        lateral_delta = -dx_world
+
+        if distance <= self.tuning.position_tolerance:
+            return dx_world, dy_world, forward_delta, lateral_delta, distance, 0.0, 0.0, True
+
+        vx = (
+            math.copysign(self.tuning.max_linear_speed, forward_delta)
+            if abs(forward_delta) > self.tuning.position_tolerance
+            else 0.0
+        )
+        vy = (
+            math.copysign(self.tuning.max_lateral_speed, lateral_delta)
+            if abs(lateral_delta) > self.tuning.position_tolerance
+            else 0.0
+        )
+
+        speed_norm = math.hypot(vx, vy)
+        if speed_norm > self.tuning.max_linear_speed:
+            scale = self.tuning.max_linear_speed / speed_norm
+            vx *= scale
+            vy *= scale
+
+        return dx_world, dy_world, forward_delta, lateral_delta, distance, vx, vy, False
+
+    def _yaw_command(self, target_yaw_deg: float, current_yaw_deg: float) -> Tuple[float, float, bool]:
+        yaw_error_deg = normalize_angle_deg(target_yaw_deg - current_yaw_deg)
+        if abs(yaw_error_deg) <= self.tuning.yaw_tolerance_deg:
+            return yaw_error_deg, 0.0, True
+        return yaw_error_deg, math.copysign(self.tuning.max_yaw_speed, yaw_error_deg), False
+
     def goback(self, client, stop_event: threading.Event) -> int:
         target = self.sensor_hub.get_recorded_location()
         deadline = time.monotonic() + self.tuning.goback_timeout
@@ -454,39 +493,23 @@ class ReturnController:
                     break
 
                 current = self.sensor_hub.get_latest_valid_uwb(wait_timeout=0.5)
-                dx_world = target.x - current.x
-                dy_world = target.y - current.y
-                distance = math.hypot(dx_world, dy_world)
-                if distance <= self.tuning.position_tolerance:
+                (
+                    dx_world,
+                    dy_world,
+                    forward_delta,
+                    lateral_delta,
+                    distance,
+                    vx,
+                    vy,
+                    position_reached,
+                ) = self._position_command(target, current)
+                if position_reached:
                     print(
                         "goback reached target: "
                         f"current=({current.x:.3f}, {current.y:.3f}), "
                         f"remaining={distance:.3f} m"
                     )
                     break
-
-                # Fixed UWB-plane mapping:
-                #   +Y -> robot forward  -> Move(vx > 0)
-                #   +X -> robot right    -> Move(vy < 0)
-                forward_delta = dy_world
-                lateral_delta = -dx_world
-
-                vx = (
-                    math.copysign(self.tuning.max_linear_speed, forward_delta)
-                    if abs(forward_delta) > self.tuning.position_tolerance
-                    else 0.0
-                )
-                vy = (
-                    math.copysign(self.tuning.max_lateral_speed, lateral_delta)
-                    if abs(lateral_delta) > self.tuning.position_tolerance
-                    else 0.0
-                )
-
-                speed_norm = math.hypot(vx, vy)
-                if speed_norm > self.tuning.max_linear_speed:
-                    scale = self.tuning.max_linear_speed / speed_norm
-                    vx *= scale
-                    vy *= scale
 
                 last_ret = client.Move(vx, vy, 0.0)
                 print(
@@ -529,16 +552,14 @@ class ReturnController:
                     break
 
                 current = self.sensor_hub.get_latest_imu(wait_timeout=0.5)
-                yaw_error_deg = normalize_angle_deg(target.yaw_deg - current.yaw_deg)
-                if abs(yaw_error_deg) <= self.tuning.yaw_tolerance_deg:
+                yaw_error_deg, yaw_rate, yaw_reached = self._yaw_command(target.yaw_deg, current.yaw_deg)
+                if yaw_reached:
                     print(
                         "back_direction reached target: "
                         f"current_yaw={current.yaw_deg:.3f} deg, "
                         f"error={yaw_error_deg:.3f} deg"
                     )
                     break
-
-                yaw_rate = math.copysign(self.tuning.max_yaw_speed, yaw_error_deg)
 
                 last_ret = client.Move(0.0, 0.0, yaw_rate)
                 print(
@@ -559,5 +580,82 @@ class ReturnController:
         finally:
             stop_ret = client.StopMove()
             print(f"back_direction StopMove ret: {stop_ret}")
+
+        return last_ret
+
+    def return_pose(self, client, stop_event: threading.Event) -> int:
+        location_target = self.sensor_hub.get_recorded_location()
+        direction_target = self.sensor_hub.get_recorded_direction()
+        deadline = time.monotonic() + max(
+            self.tuning.goback_timeout,
+            self.tuning.back_direction_timeout,
+        )
+        last_ret = 0
+        print(
+            "return_pose start: "
+            f"target=({location_target.x:.3f}, {location_target.y:.3f}, {location_target.z:.3f}), "
+            f"target_yaw={direction_target.yaw_deg:.3f} deg, "
+            f"pos_tol={self.tuning.position_tolerance:.3f} m, "
+            f"yaw_tol={self.tuning.yaw_tolerance_deg:.3f} deg"
+        )
+
+        try:
+            while time.monotonic() < deadline:
+                if stop_event.is_set():
+                    print("return_pose interrupted by stop/damp command")
+                    break
+
+                current_uwb = self.sensor_hub.get_latest_valid_uwb(wait_timeout=0.5)
+                current_imu = self.sensor_hub.get_latest_imu(wait_timeout=0.5)
+                (
+                    dx_world,
+                    dy_world,
+                    forward_delta,
+                    lateral_delta,
+                    distance,
+                    vx,
+                    vy,
+                    position_reached,
+                ) = self._position_command(location_target, current_uwb)
+                yaw_error_deg, yaw_rate, yaw_reached = self._yaw_command(
+                    direction_target.yaw_deg,
+                    current_imu.yaw_deg,
+                )
+
+                if position_reached and yaw_reached:
+                    print(
+                        "return_pose reached target: "
+                        f"current=({current_uwb.x:.3f}, {current_uwb.y:.3f}) "
+                        f"current_yaw={current_imu.yaw_deg:.3f} deg "
+                        f"remaining={distance:.3f} m "
+                        f"yaw_error={yaw_error_deg:.3f} deg"
+                    )
+                    break
+
+                last_ret = client.Move(vx, vy, yaw_rate)
+                print(
+                    "return_pose step: "
+                    f"current=({current_uwb.x:.3f}, {current_uwb.y:.3f}) "
+                    f"target=({location_target.x:.3f}, {location_target.y:.3f}) "
+                    f"current_yaw={current_imu.yaw_deg:.3f} deg "
+                    f"target_yaw={direction_target.yaw_deg:.3f} deg "
+                    f"uwb_delta=({dx_world:.3f}, {dy_world:.3f}) "
+                    f"cmd_delta=(forward={forward_delta:.3f}, lateral={lateral_delta:.3f}) "
+                    f"distance={distance:.3f} "
+                    f"yaw_error={yaw_error_deg:.3f} deg "
+                    f"cmd=(vx={vx:.3f}, vy={vy:.3f}, vyaw={yaw_rate:.3f}) ret={last_ret}"
+                )
+
+                if not interruptible_sleep(self.tuning.control_interval, stop_event):
+                    print("return_pose interrupted during control interval")
+                    break
+            else:
+                raise RuntimeError(
+                    "return_pose timed out after "
+                    f"{max(self.tuning.goback_timeout, self.tuning.back_direction_timeout):.1f}s"
+                )
+        finally:
+            stop_ret = client.StopMove()
+            print(f"return_pose StopMove ret: {stop_ret}")
 
         return last_ret
