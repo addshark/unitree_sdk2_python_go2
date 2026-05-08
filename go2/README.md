@@ -114,6 +114,45 @@ External devices should send UDP to one of these local addresses:
 python3 go2/high_level/go2_udp_control.py eth0 --port 8082
 ```
 
+## 开机自启
+
+仓库里已经提供了 `systemd` 服务模板、启动脚本和安装脚本：
+
+```bash
+cd /home/unitree/unitree_sdk2_python_go2
+bash go2/high_level/install_go2_udp_control_service.sh
+```
+
+安装脚本会：
+
+- 把服务文件安装到 `/etc/systemd/system/go2-udp-control.service`
+- 把示例配置复制到 `/etc/default/go2-udp-control`
+- 执行 `systemctl enable --now go2-udp-control.service`
+
+常用命令：
+
+```bash
+sudo systemctl status go2-udp-control.service
+sudo systemctl restart go2-udp-control.service
+sudo systemctl stop go2-udp-control.service
+sudo journalctl -u go2-udp-control.service -f
+```
+
+配置文件：
+
+```bash
+sudo nano /etc/default/go2-udp-control
+```
+
+这里可以直接改：
+
+- `DDS_INTERFACE`
+- `IMU_PORT` / `UWB_PORT`
+- `UDP_PORT` / `UDP_STATUS_PORT`
+- `GOBACK_MAX_SPEED`
+- `GOBACK_MAX_LATERAL_SPEED`
+- `BACK_DIRECTION_MAX_YAW_SPEED`
+
 如果网络变了，用下面命令重新确认本机 IP：
 
 ```bash

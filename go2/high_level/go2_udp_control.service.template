@@ -1,0 +1,23 @@
+[Unit]
+Description=Unitree Go2 UDP Control Receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+SupplementaryGroups=dialout
+WorkingDirectory=@REPO_ROOT@
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/default/go2-udp-control
+ExecStart=@REPO_ROOT@/go2/high_level/run_go2_udp_control_service.sh
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
