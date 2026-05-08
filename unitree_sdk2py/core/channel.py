@@ -1,4 +1,5 @@
 import time
+import subprocess
 from typing import Any, Callable
 import threading
 from threading import Thread, Event
@@ -14,7 +15,7 @@ from cyclonedds.util import duration
 from cyclonedds.internal import dds_c_t, InvalidSample
 
 # for channel config
-from .channel_config import ChannelConfigAutoDetermine, ChannelConfigHasInterface
+from .channel_config import ChannelConfigAutoDetermine, ChannelConfigHasAddress, ChannelConfigHasInterface
 
 # for singleton
 from ..utils.singleton import Singleton
@@ -199,6 +200,53 @@ class ChannelFactory(Singleton):
     def __init__(self):
         super().__init__()
 
+    @staticmethod
+    def __LooksLikeIpv4Address(value: str) -> bool:
+        parts = value.split(".")
+        if len(parts) != 4:
+            return False
+        try:
+            return all(0 <= int(part) <= 255 for part in parts)
+        except ValueError:
+            return False
+
+    @staticmethod
+    def __ResolveInterfaceIpv4Address(name: str):
+        try:
+            output = subprocess.check_output(
+                ["ip", "-4", "-o", "addr", "show", "dev", name],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            return None
+
+        for line in output.splitlines():
+            fields = line.split()
+            if "inet" not in fields:
+                continue
+            index = fields.index("inet")
+            if index + 1 >= len(fields):
+                continue
+            value = fields[index + 1]
+            if "/" in value:
+                return value.split("/", 1)[0]
+            return value
+        return None
+
+    @classmethod
+    def __BuildConfigForInterface(cls, networkInterface: str):
+        if cls.__LooksLikeIpv4Address(networkInterface):
+            return ChannelConfigHasAddress.replace('$__IF_ADDR__$', networkInterface)
+
+        address = cls.__ResolveInterfaceIpv4Address(networkInterface)
+        if address is not None:
+            print(f"[ChannelFactory] using interface address {address} for {networkInterface}")
+            return ChannelConfigHasAddress.replace('$__IF_ADDR__$', address)
+
+        print(f"[ChannelFactory] no IPv4 found for {networkInterface}, falling back to name match")
+        return ChannelConfigHasInterface.replace('$__IF_NAME__$', networkInterface)
+
     def Init(self, id: int, networkInterface: str = None, qos: Qos = None):
         if self.__class__.__initialized:
             return True
@@ -212,7 +260,7 @@ class ChannelFactory(Singleton):
             if networkInterface is None:
                 config = ChannelConfigAutoDetermine
             else:
-                config = ChannelConfigHasInterface.replace('$__IF_NAME__$', networkInterface)
+                config = self.__BuildConfigForInterface(networkInterface)
 
             try:
                 self.__class__.__domain = Domain(id, config)

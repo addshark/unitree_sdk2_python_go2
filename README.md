@@ -57,6 +57,13 @@ cd /home/unitree/unitree_sdk2_python_go2
 python3 go2/high_level/go2_udp_control.py eth0
 ```
 
+如果这个仓库是通过 `deploy_from_github.sh` 部署出来的，依赖默认安装在仓库内的 `.venv`，手动运行时要优先使用：
+
+```bash
+cd /home/unitree/unitree_sdk2_python_go2
+.venv/bin/python go2/high_level/go2_udp_control.py eth0
+```
+
 ### IMU 单独查看
 
 ```bash

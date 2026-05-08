@@ -323,6 +323,7 @@ echo
 echo "Deployment complete."
 echo "Repository: ${target_dir}"
 echo "Virtualenv python: ${venv_python}"
+echo "Manual run: cd ${target_dir} && ${venv_python} go2/high_level/go2_udp_control.py ${dds_interface}"
 if [[ "${skip_service}" -eq 0 ]]; then
   echo "Service: go2-udp-control.service"
   echo "Logs: sudo journalctl -u go2-udp-control.service -f"

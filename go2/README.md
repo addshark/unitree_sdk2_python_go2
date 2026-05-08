@@ -135,7 +135,7 @@ bash go2/high_level/install_go2_udp_control_service.sh
 sudo systemctl status go2-udp-control.service
 sudo systemctl restart go2-udp-control.service
 sudo systemctl stop go2-udp-control.service
-sudo journalctl -u go2-udp-control.service -f
+sudo journalctl -u go2-udp-control.service -f  看日志
 ```
 
 配置文件：

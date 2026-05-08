@@ -13,6 +13,21 @@ ChannelConfigHasInterface = '''<?xml version="1.0" encoding="UTF-8" ?>
         </Domain>
     </CycloneDDS>'''
 
+ChannelConfigHasAddress = '''<?xml version="1.0" encoding="UTF-8" ?>
+    <CycloneDDS>
+        <Domain Id="any">
+            <General>
+                <Interfaces>
+                    <NetworkInterface address="$__IF_ADDR__$" priority="default" multicast="default"/>
+                </Interfaces>
+            </General>
+            <Tracing>
+                <Verbosity>config</Verbosity>
+            <OutputFile>/tmp/cdds.LOG</OutputFile>
+        </Tracing>
+        </Domain>
+    </CycloneDDS>'''
+
 ChannelConfigAutoDetermine = '''<?xml version="1.0" encoding="UTF-8" ?>
     <CycloneDDS>
         <Domain Id="any">
