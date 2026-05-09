@@ -33,6 +33,12 @@ STATIC_WALK_ID = 24
 TROT_RUN_ID = 25
 ECONOMIC_GAIT_ID = 26
 CLASSIC_WALK_ID = 27
+DANCE1_ID = 35
+DANCE2_ID = 36
+HEART_ID = 37
+HANDSHAKE_ID = 38
+SIT_ID = 39
+STRETCH_ID = 40
 RECORD_LOCATION_ID = 30
 GO_BACK_ID = 31
 RECORD_DIRECTION_ID = 32
@@ -83,6 +89,12 @@ ACTIONS = [
     Action(17, "walk upright", "直立行走动作开关"),
     Action(18, "cross step", "交叉步动作开关"),
     Action(19, "free jump", "跳跃动作开关"),
+    Action(DANCE1_ID, "dance1", "舞蹈1", ("舞蹈1",)),
+    Action(DANCE2_ID, "dance2", "舞蹈2", ("舞蹈2",)),
+    Action(HEART_ID, "heart", "比心动作", ("比心",)),
+    Action(HANDSHAKE_ID, "handshake", "握手动作", ("hello", "握手")),
+    Action(SIT_ID, "sit", "坐下动作", ("坐下",)),
+    Action(STRETCH_ID, "stretch", "伸懒腰动作", ("伸懒腰",)),
     Action(RECORD_LOCATION_ID, "recordlocation", "记录当前 UWB 坐标", ("record location",)),
     Action(GO_BACK_ID, "goback", "根据 UWB 闭环回到记录位置"),
     Action(RECORD_DIRECTION_ID, "record_direction", "记录当前 IMU 航向", ("record direction",)),
@@ -336,6 +348,18 @@ def execute_action(
         ret = run_timed_switch("CrossStep", client.CrossStep, 4.0, stop_event)
     elif action.id == 19:
         ret = run_timed_switch("FreeJump", client.FreeJump, 4.0, stop_event)
+    elif action.id == DANCE1_ID:
+        ret = client.Dance1()
+    elif action.id == DANCE2_ID:
+        ret = client.Dance2()
+    elif action.id == HEART_ID:
+        ret = client.Heart()
+    elif action.id == HANDSHAKE_ID:
+        ret = client.Hello()
+    elif action.id == SIT_ID:
+        ret = client.Sit()
+    elif action.id == STRETCH_ID:
+        ret = client.Stretch()
     elif action.id == RECORD_LOCATION_ID:
         record = return_controller.record_location()
         print(
