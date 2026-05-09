@@ -437,6 +437,19 @@ class ReturnController:
     def record_direction(self) -> RecordedDirection:
         return self.sensor_hub.record_direction_now()
 
+    def _stop_and_restore_economic_gait(self, client, action_name: str) -> None:
+        try:
+            stop_ret = client.Move(0.0, 0.0, 0.0)
+            print(f"{action_name} zero Move ret: {stop_ret}")
+        except Exception as exc:
+            print(f"{action_name} zero Move error: {exc}")
+
+        try:
+            gait_ret = client.EconomicGait()
+            print(f"{action_name} EconomicGait ret: {gait_ret}")
+        except Exception as exc:
+            print(f"{action_name} EconomicGait error: {exc}")
+
     def _position_command(
         self,
         target: RecordedLocation,
@@ -530,8 +543,7 @@ class ReturnController:
                     f"goback timed out after {self.tuning.goback_timeout:.1f}s"
                 )
         finally:
-            stop_ret = client.StopMove()
-            print(f"goback StopMove ret: {stop_ret}")
+            self._stop_and_restore_economic_gait(client, "goback")
 
         return last_ret
 
@@ -578,8 +590,7 @@ class ReturnController:
                     f"back_direction timed out after {self.tuning.back_direction_timeout:.1f}s"
                 )
         finally:
-            stop_ret = client.StopMove()
-            print(f"back_direction StopMove ret: {stop_ret}")
+            self._stop_and_restore_economic_gait(client, "back_direction")
 
         return last_ret
 
@@ -655,7 +666,6 @@ class ReturnController:
                     f"{max(self.tuning.goback_timeout, self.tuning.back_direction_timeout):.1f}s"
                 )
         finally:
-            stop_ret = client.StopMove()
-            print(f"return_pose StopMove ret: {stop_ret}")
+            self._stop_and_restore_economic_gait(client, "return_pose")
 
         return last_ret
