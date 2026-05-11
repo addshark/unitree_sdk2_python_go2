@@ -163,7 +163,7 @@ sudo nano /etc/default/go2-udp-control
 如果是新机器从 GitHub 一键部署，直接运行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/addshark/unitree_sdk2_python_go2/main/deploy_from_github.sh)
+ bash <(curl -fL https://raw.githubusercontent.com/addshark/unitree_sdk2_python_go2/main/deploy_from_github.sh)
 ```
 
 如果网络变了，用下面命令重新确认本机 IP：
