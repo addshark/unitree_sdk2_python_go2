@@ -1,0 +1,9 @@
+prefix=/home/unitree/unitree_sdk2_python_go2/.deps/cyclonedds/install
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: CycloneDDS
+Description: Eclipse Cyclone DDS library
+Version: 0.10.5
+Libs: -L${libdir} -lddsc
+Cflags: -I${includedir}

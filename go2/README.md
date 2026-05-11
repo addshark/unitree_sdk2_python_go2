@@ -155,6 +155,7 @@ sudo nano /etc/default/go2-udp-control
 - `DDS_INTERFACE`
 - `IMU_PORT` / `UWB_PORT`
 - `UDP_PORT` / `UDP_STATUS_PORT`
+- `UDP_COMMAND_DEDUPE_WINDOW`
 - `GOBACK_MAX_SPEED`
 - `GOBACK_MAX_LATERAL_SPEED`
 - `BACK_DIRECTION_MAX_YAW_SPEED`
@@ -203,6 +204,8 @@ echo -n "list" | nc -u -w1 192.168.2.11 8082
 ```
 
 UDP 动作对应表和上面的高层动作表一致。收到 `stop_move`/`6` 或 `damp`/`0` 时，程序会清空尚未执行的排队动作，并中断正在计时的开关类动作，也会中断 `goback` / `back_direction` / `return_pose` 这类闭环动作。
+
+为适配 App 端每隔 `20ms` 连续发送三次同一指令的防丢包策略，UDP 接收程序默认会过滤同一来源 IP 在 `0.12s` 内重复发送的同一个动作，只把第一次加入动作队列。需要调整或关闭时可以改 `--command-dedupe-window`，设为 `0` 表示不去重。
 
 UDP 接收程序额外增加了一个组合动作、四个常规步态动作、六个表演/姿态动作和五个基于传感器的闭环命令：
 

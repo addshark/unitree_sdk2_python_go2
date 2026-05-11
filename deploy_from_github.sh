@@ -20,6 +20,7 @@ Options:
   --uwb-port PORT                   UWB serial port, default auto
   --udp-port PORT                   UDP command port, default 8082
   --status-port PORT                UDP status broadcast port, default 8083
+  --command-dedupe-window SECONDS   UDP same-action dedupe window, default 0.12
   --goback-max-speed VALUE          Goback forward/back speed
   --goback-max-lateral-speed VALUE  Goback lateral speed
   --back-direction-max-yaw-speed V  Back-direction yaw speed
@@ -56,6 +57,7 @@ udp_bind="0.0.0.0"
 udp_port="8082"
 status_port="8083"
 status_interval="0.2"
+command_dedupe_window="0.12"
 sport_timeout="10.0"
 sensor_serial_timeout="0.2"
 sensor_stale_timeout="1.0"
@@ -123,6 +125,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --status-interval)
       status_interval="$2"
+      shift 2
+      ;;
+    --command-dedupe-window)
+      command_dedupe_window="$2"
       shift 2
       ;;
     --sport-timeout)
@@ -289,6 +295,7 @@ UDP_BIND=${udp_bind}
 UDP_PORT=${udp_port}
 UDP_STATUS_PORT=${status_port}
 UDP_STATUS_INTERVAL=${status_interval}
+UDP_COMMAND_DEDUPE_WINDOW=${command_dedupe_window}
 SPORT_TIMEOUT=${sport_timeout}
 IMU_PORT=${imu_port}
 IMU_BAUD=${imu_baud}

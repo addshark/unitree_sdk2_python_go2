@@ -26,6 +26,7 @@ DEFAULT_BIND = "0.0.0.0"
 DEFAULT_PORT = 8082
 DEFAULT_STATUS_PORT = 8083
 DEFAULT_STATUS_INTERVAL = 0.2
+DEFAULT_COMMAND_DEDUPE_WINDOW = 0.12
 LINEAR_SPEED = 0.5
 YAW_SPEED = 0.9
 STAND_MOVE_DELAY = 3.0
@@ -198,6 +199,30 @@ class RobotStateCache:
             "sport_state_age": None if sport_state_time is None else time.time() - sport_state_time,
             "last_action": last_action,
         }
+
+
+class UdpCommandDeduplicator:
+    def __init__(self, window_seconds: float):
+        self.window_seconds = max(0.0, window_seconds)
+        self._last_seen: Dict[Tuple[str, int], float] = {}
+
+    def is_duplicate(self, source_ip: str, action: Action) -> bool:
+        if self.window_seconds <= 0:
+            return False
+
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        for key, seen_at in list(self._last_seen.items()):
+            if seen_at < cutoff:
+                del self._last_seen[key]
+
+        key = (source_ip, action.id)
+        seen_at = self._last_seen.get(key)
+        if seen_at is not None and now - seen_at <= self.window_seconds:
+            return True
+
+        self._last_seen[key] = now
+        return False
 
 
 def normalize_command(value: str) -> str:
@@ -548,6 +573,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"UDP listen port, default {DEFAULT_PORT}")
     parser.add_argument("--status-port", type=int, default=DEFAULT_STATUS_PORT, help=f"UDP status broadcast port, default {DEFAULT_STATUS_PORT}")
     parser.add_argument("--status-interval", type=float, default=DEFAULT_STATUS_INTERVAL, help=f"Status broadcast interval seconds, default {DEFAULT_STATUS_INTERVAL}")
+    parser.add_argument("--command-dedupe-window", type=float, default=DEFAULT_COMMAND_DEDUPE_WINDOW, help=f"Ignore repeated same-action UDP commands from the same source IP within this many seconds, default {DEFAULT_COMMAND_DEDUPE_WINDOW}")
     parser.add_argument("--broadcast-host", action="append", help="Status broadcast host. Can be repeated. Default: auto LAN broadcast address.")
     parser.add_argument("--timeout", type=float, default=10.0, help="SportClient RPC timeout seconds")
     parser.add_argument("--imu-port", default="auto", help="IMU serial port, default auto")
@@ -623,6 +649,7 @@ def main() -> int:
 
     stop_event = threading.Event()
     actions: "queue.Queue[Action]" = queue.Queue(maxsize=50)
+    command_deduplicator = UdpCommandDeduplicator(args.command_dedupe_window)
     worker = threading.Thread(
         target=action_worker,
         args=(client, actions, stop_event, state_cache, return_controller),
@@ -656,6 +683,12 @@ def main() -> int:
                     continue
 
                 validate_action_request(action, return_controller)
+
+                if command_deduplicator.is_duplicate(address[0], action):
+                    response = f"OK duplicate ignored id={action.id}, name={action.name}"
+                    print(f"{address[0]}:{address[1]} -> {response}")
+                    sock.sendto(response.encode("utf-8"), address)
+                    continue
 
                 if action.id in STOP_ACTION_IDS:
                     stop_event.set()
